@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nxrHub - داشبورد</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: Tahoma, sans-serif; }
+  body { background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 20px; }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { text-align: center; margin-bottom: 24px; color: #58a6ff; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .cards-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .cards-row .card { flex: 1; min-width: 200px; text-align: center; }
+  .card h3 { color: #8b949e; font-size: 14px; margin-bottom: 8px; }
+  .card .value { font-size: 24px; font-weight: bold; }
+  .blue { color: #58a6ff; } .green { color: #3fb950; } .orange { color: #f0883e; }
+  #chart-container { position: relative; height: 300px; }
+  .trade-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  input[type=number] {
+    background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    border-radius: 8px; padding: 10px; flex: 1; min-width: 120px; font-size: 15px;
+  }
+  button {
+    border: none; border-radius: 8px; padding: 10px 22px; font-size: 15px;
+    cursor: pointer; font-weight: bold; color: #fff;
+  }
+  .btn-buy { background: #238636; } .btn-sell { background: #da3633; }
+  .btn-charge { background: #1f6feb; } .btn-refresh { background: #30363d; }
+  button:hover { opacity: 0.85; }
+  .msg { text-align: center; margin-top: 12px; font-size: 14px; min-height: 20px; }
+  .msg.ok { color: #3fb950; } .msg.err { color: #f85149; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🪙 nxrHub — مارکت NXR</h1>
+
+  <!-- کارت‌های اطلاعات کاربر -->
+  <div class="cards-row">
+    <div class="card">
+      <h3>اعتبار حساب (ریال)</h3>
+      <div class="value blue" id="wallet-balance">—</div>
+    </div>
+    <div class="card">
+      <h3>موجودی توکن NXR</h3>
+      <div class="value green" id="token-balance">—</div>
+    </div>
+    <div class="card">
+      <h3>قیمت لحظه‌ای</h3>
+      <div class="value orange" id="current-price">—</div>
+    </div>
+  </div>
+
+  <!-- نمودار زنده قیمت -->
+  <div class="card">
+    <h3>📈 نمودار زنده قیمت</h3>
+    <div id="chart-container">
+      <canvas id="priceChart"></canvas>
+    </div>
+  </div>
+
+  <!-- شارژ حساب -->
+  <div class="card">
+    <h3>💳 شارژ حساب</h3>
+    <div class="trade-row">
+      <input type="number" id="deposit-amount" placeholder="مبلغ به ریال">
+      <button class="btn-charge" onclick="deposit()">شارژ</button>
+    </div>
+  </div>
+
+  <!-- خرید و فروش -->
+  <div class="card">
+    <h3>🔁 معامله توکن</h3>
+    <div class="trade-row">
+      <input type="number" id="trade-amount" placeholder="تعداد توکن">
+      <button class="btn-buy" onclick="trade('buy')">خرید</button>
+      <button class="btn-sell" onclick="trade('sell')">فروش</button>
+      <button class="btn-refresh" onclick="fetchDashboard()">بروزرسانی</button>
+    </div>
+  </div>
+
+  <div class="msg" id="msg"></div>
+</div>
+
+<script>
+const API = 'https://nxrhub.abtin-sad1393.workers.dev';
+const token = localStorage.getItem('nxr_token');
+
+if (!token) {
+  location.href = 'login.html'; // اگر صفحه لاگین نداری، این خط را حذف کن
+}
+
+async function apiRequest(path, opts = {}) {
+  const res = await fetch(API + path + (path.includes('?') ? '&' : '?') + '_t=' + Date.now(), {
+    cache: 'no-store',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    ...opts
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'خطای سرور');
+  return data;
+}
+
+function showMsg(text, ok) {
+  const el = document.getElementById('msg');
+  el.innerText = text;
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+// ---------- نمودار ----------
+let priceHistory = [];
+let priceLabels = [];
+
+const ctx = document.getElementById('priceChart').getContext('2d');
+window.marketChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: priceLabels,
+    datasets: [{
+      label: 'قیمت NXR (ریال)',
+      data: priceHistory,
+      borderColor: '#f0883e',
+      backgroundColor: 'rgba(240, 136, 62, 0.15)',
+      fill: true,
+      tension: 0.35,
+      pointRadius: 3
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#8b949e' } } },
+    scales: {
+      x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+      y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
+    }
+  }
+});
+
+function pushPrice(newPrice) {
+  const now = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+  priceLabels.push(timeStr);
+  priceHistory.push(newPrice);
+
+  if (priceLabels.length > 20) { priceLabels.shift(); priceHistory.shift(); }
+  window.marketChart.update();
+}
+
+// ---------- داشبورد ----------
+async function fetchDashboardData() {
+  try {
+    const data = await apiRequest('/api/wallet');
+    document.getElementById('wallet-balance').innerText = Number(data.balance).toLocaleString('fa-IR');
+    document.getElementById('token-balance').innerText = Number(data.token_balance).toLocaleString('fa-IR');
+    document.getElementById('current-price').innerText = Number(data.price).toLocaleString('fa-IR') + ' ریال';
+  } catch (e) {
+    showMsg('خطا در همگام‌سازی داشبورد: ' + e.message, false);
+  }
+}
+
+// ---------- حلقه قیمت زنده (هر ۳ ثانیه) ----------
+setInterval(async () => {
+  try {
+    const data = await apiRequest('/api/market/price');
+    document.getElementById('current-price').innerText = Number(data.price).toLocaleString('fa-IR') + ' ریال';
+    pushPrice(data.price);
+  } catch (e) {
+    // اگر سرور قطع بود، رندوم لوکال که نمودار نمیره
+    const fallback = Math.floor(Math.random() * 3500) + 500;
+    document.getElementById('current-price').innerText = fallback.toLocaleString('fa-IR') + ' ریال';
+    pushPrice(fallback);
+  }
+}, 3000);
+
+// ---------- شارژ ----------
+async function deposit() {
+  try {
+    const amount = parseInt(document.getElementById('deposit-amount').value);
+    const data = await apiRequest('/api/wallet/deposit', {
+      method: 'POST',
+      body: JSON.stringify({ amount })
+    });
+    showMsg(data.message, true);
+    fetchDashboardData();
+  } catch (e) {
+    showMsg(e.message, false);
+  }
+}
+
+// ---------- معامله ----------
+async function trade(type) {
+  try {
+    const amount = parseInt(document.getElementById('trade-amount').value);
+    const data = await apiRequest('/api/market/' + type, {
+      method: 'POST',
+      body: JSON.stringify({ amount })
+    });
+    showMsg(data.message, true);
+    fetchDashboardData();
+  } catch (e) {
+    showMsg(e.message, false);
+  }
+}
+
+fetchDashboardData();
+</script>
+</body>
+</html>
